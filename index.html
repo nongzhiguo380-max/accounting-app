@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>项目记账本</title>
 <script src="https://imgcache.qq.com/qcloud/tcbjs/2.1.0/tcb.js"></script>
 
@@ -204,6 +204,7 @@ label{font-size:13px;color:#666;display:block;margin-bottom:4px}
   <div class="card">
     <h3 style="margin-bottom:12px">数据管理</h3>
     <div class="action-btns">
+      <button class="btn btn-primary btn-sm" onclick="(async function(){await syncData()})()">同步数据</button>
       <button class="btn btn-outline btn-sm" onclick="(async function(){await exportData()})()">导出备份</button>
       <button class="btn btn-outline btn-sm" onclick="importData()">导入恢复</button>
       <button class="btn btn-danger btn-sm" onclick="clearAll()">清空数据</button>
@@ -279,6 +280,28 @@ async function syncFromCloud(){
     var r2=await db.collection('transactions').get(); localSave(STORAGE_KEY_TRANSACTIONS, r2.data||[]);
     var r3=await db.collection('categories').get(); localSave(STORAGE_KEY_CATEGORIES, r3.data||[]);
   }catch(e){ console.error('sync error:',e) }
+}
+
+// 手动同步：先推本地到云端，再从云端拉回覆盖本地
+async function syncData(){
+  if(!db){ alert('云端SDK未加载，请检查网络后刷新页面。'); return; }
+  await ensureCloudReady();
+  if(!cloudReady){ alert('云端未连接，请检查网络后重试。'); return; }
+  try{
+    // 推本地数据到云端
+    await saveProjects(localLoad(STORAGE_KEY_PROJECTS));
+    await saveTransactions(localLoad(STORAGE_KEY_TRANSACTIONS));
+    await saveCategories(localLoad(STORAGE_KEY_CATEGORIES));
+    // 从云端拉取最新数据覆盖本地
+    await syncFromCloud();
+    // 刷新当前页面
+    if(currentTab==='records') await renderTransactions();
+    if(currentTab==='projects') await renderProjects();
+    if(currentTab==='settings') await renderCategories();
+  }catch(e){
+    console.error('syncData error:',e);
+    alert('同步失败：'+e.message);
+  }
 }
 
 // 轻量读取 - 优先本地缓存，云端后台同步
