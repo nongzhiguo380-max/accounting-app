@@ -757,6 +757,7 @@ function renderProjectDetail(){
         '<div style="display:flex;align-items:center;gap:6px">'+
           '<span class="amount '+(t.type==='income'?'amount-income':'amount-expense')+'">'+(t.type==='income'?'+':'-')+'¥'+formatMoney(t.amount)+'</span>'+
           '<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();openTransactionModal(\''+t.id+'\')" style="padding:3px 6px;font-size:10px">编辑</button>'+
+          '<button class="btn btn-danger btn-sm" onclick="deleteTransaction(\''+t.id+'\')" style="padding:3px 6px;font-size:10px">删</button>'+
         '</div>'+
       '</div>';
     }).join('');
