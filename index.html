@@ -247,7 +247,7 @@ function ensureCloudReady(){
     var count=0;
     var timer=setInterval(function(){
       if(cloudReady){ clearInterval(timer); resolve(); }
-      else if(++count>15){ clearInterval(timer); resolve(); } // 最多等3秒，超时也resolve不阻塞
+      else if(++count>25){ clearInterval(timer); resolve(); } // 最多等5秒
     }, 200);
   });
 }
@@ -1143,6 +1143,7 @@ async function initData(){
 // ==================== 启动 ====================
 document.addEventListener('DOMContentLoaded',async function(){
   try{
+    await syncFromCloud();
     await initData();
     await renderTransactions();
   }catch(e){
