@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>项目记账本</title>
+<script src="https://imgcache.qq.com/qcloud/tcbjs/2.1.0/tcb.js"></script>
+
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="记账本">
@@ -196,13 +198,13 @@ label{font-size:13px;color:#666;display:block;margin-bottom:4px}
     <div id="all-categories"></div>
     <div style="margin-top:10px;display:flex;gap:8px">
       <button class="btn btn-outline btn-sm" onclick="openCategoryModal()">新增分类</button>
-      <button class="btn btn-outline btn-sm" onclick="resetCategories()">恢复预设</button>
+      <button class="btn btn-outline btn-sm" onclick="(async function(){await resetCategories()})()">恢复预设</button>
     </div>
   </div>
   <div class="card">
     <h3 style="margin-bottom:12px">数据管理</h3>
     <div class="action-btns">
-      <button class="btn btn-outline btn-sm" onclick="exportData()">导出备份</button>
+      <button class="btn btn-outline btn-sm" onclick="(async function(){await exportData()})()">导出备份</button>
       <button class="btn btn-outline btn-sm" onclick="importData()">导入恢复</button>
       <button class="btn btn-danger btn-sm" onclick="clearAll()">清空数据</button>
     </div>
@@ -214,6 +216,92 @@ label{font-size:13px;color:#666;display:block;margin-bottom:4px}
 </div>
 
 <script>
+
+// ==================== 腾讯云初始化（容错模式） ====================
+const TCB_ENV = 'jizhang-d1gzkty4fa360a02c';
+let tcbApp = null, db = null, auth = null;
+let cloudReady = false;
+
+try {
+  if (typeof tcb !== 'undefined') {
+    tcbApp = tcb.init({env: TCB_ENV});
+    db = tcbApp.database();
+    auth = tcbApp.auth();
+    // 匿名登录
+    auth.anonymousAuthProvider().signIn().then(function(){
+      cloudReady = true;
+      console.log('云数据库已连接');
+    }).catch(function(e){
+      console.error('云数据库连接失败:', e);
+    });
+  } else {
+    console.warn('tcb SDK 未加载，仅使用本地存储');
+  }
+} catch(e){
+  console.error('云数据库初始化失败:', e);
+}
+
+function ensureCloudReady(){
+  return new Promise(function(resolve){
+    if(cloudReady || !db){ resolve(); return; }
+    var count=0;
+    var timer=setInterval(function(){
+      if(cloudReady){ clearInterval(timer); resolve(); }
+      else if(++count>15){ clearInterval(timer); resolve(); } // 最多等3秒，超时也resolve不阻塞
+    }, 200);
+  });
+}
+
+// 云数据库操作封装 - 保留 localStorage 作为离线缓存兜底
+const STORAGE_KEY_PROJECTS = 'acc_projects';
+const STORAGE_KEY_TRANSACTIONS = 'acc_transactions';
+const STORAGE_KEY_CATEGORIES = 'acc_categories';
+const SYNC_PREFIX = 'acc_sync_';
+
+function localSave(key, data){ try{localStorage.setItem(key, JSON.stringify(data))}catch(e){} }
+function localLoad(key){ try{return JSON.parse(localStorage.getItem(key))||[]}catch(e){return[]} }
+
+// ==================== 数据层（localStorage 优先，云端尽力而为） ====================
+async function loadProjects(){ localSave(STORAGE_KEY_PROJECTS, localLoad(STORAGE_KEY_PROJECTS)); return localLoad(STORAGE_KEY_PROJECTS); }
+async function saveProjects(data){ localSave(STORAGE_KEY_PROJECTS, data); if(db){ await ensureCloudReady(); if(cloudReady){ for(var i=0;i<data.length;i++){ var d=data[i]; d._id=d.id; await db.collection('projects').doc(d.id).set(d).catch(function(){})} } } }
+async function loadTransactions(){ return localLoad(STORAGE_KEY_TRANSACTIONS); }
+async function saveTransactions(data){ localSave(STORAGE_KEY_TRANSACTIONS, data); if(db){ await ensureCloudReady(); if(cloudReady){ for(var i=0;i<data.length;i++){ var d=data[i]; d._id=d.id; await db.collection('transactions').doc(d.id).set(d).catch(function(){})} } } }
+async function loadCategories(){ return localLoad(STORAGE_KEY_CATEGORIES); }
+async function saveCategories(data){ localSave(STORAGE_KEY_CATEGORIES, data); if(db){ await ensureCloudReady(); if(cloudReady){ for(var i=0;i<data.length;i++){ var d=data[i]; d._id=d.id; await db.collection('categories').doc(d.id).set(d).catch(function(){})} } } }
+
+// 从云端全量同步到本地
+async function syncFromCloud(){
+  if(!db) return;
+  try{
+    await ensureCloudReady();
+    if(!cloudReady) return;
+    var r1=await db.collection('projects').get(); localSave(STORAGE_KEY_PROJECTS, r1.data||[]);
+    var r2=await db.collection('transactions').get(); localSave(STORAGE_KEY_TRANSACTIONS, r2.data||[]);
+    var r3=await db.collection('categories').get(); localSave(STORAGE_KEY_CATEGORIES, r3.data||[]);
+  }catch(e){ console.error('sync error:',e) }
+}
+
+// 轻量读取 - 优先本地缓存，云端后台同步
+async function getCategories(){
+  var cats = localLoad(STORAGE_KEY_CATEGORIES);
+  if(cats.length===0){ await syncFromCloud(); cats=localLoad(STORAGE_KEY_CATEGORIES); }
+  if(cats.length===0){ cats=DEFAULT_CATEGORIES.map(function(c){return Object.assign({},c)}); }
+  cats.forEach(function(c){delete c.type});
+  return cats;
+}
+async function getTransactions(){
+  var txns = localLoad(STORAGE_KEY_TRANSACTIONS);
+  if(txns.length===0){ await syncFromCloud(); txns=localLoad(STORAGE_KEY_TRANSACTIONS); }
+  txns.forEach(function(t){ if(!t.categoryId){t.categoryId=''} });
+  return txns;
+}
+async function loadProjectsLocal(){
+  var projs = localLoad(STORAGE_KEY_PROJECTS);
+  if(projs.length===0){ await syncFromCloud(); projs=localLoad(STORAGE_KEY_PROJECTS); }
+  return projs;
+}
+
+
 // ==================== 预设分类（统一，无 type 字段） ====================
 const DEFAULT_CATEGORIES = [
   {id:'cat_u_1',name:'合同总价',group:'项目收入',createdAt:'2026-01-01T00:00:00.000Z'},
@@ -245,57 +333,7 @@ const PIE_COLORS = [
   '#2c3e50','#34495e','#7f8c8d','#95a5a6','#1abc9c','#27ae60','#e74c3c'
 ];
 
-// ==================== 数据模型 ====================
-const STORAGE_KEY_PROJECTS = 'acc_projects';
-const STORAGE_KEY_TRANSACTIONS = 'acc_transactions';
-const STORAGE_KEY_CATEGORIES = 'acc_categories';
-
-function loadProjects(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY_PROJECTS))||[]}catch(e){return[]}}
-function saveProjects(data){localStorage.setItem(STORAGE_KEY_PROJECTS,JSON.stringify(data))}
-function loadTransactions(){try{return JSON.parse(localStorage.getItem(STORAGE_KEY_TRANSACTIONS))||[]}catch(e){return[]}}
-function saveTransactions(data){localStorage.setItem(STORAGE_KEY_TRANSACTIONS,JSON.stringify(data))}
-function loadCategories(){
-  try{
-    var data=JSON.parse(localStorage.getItem(STORAGE_KEY_CATEGORIES));
-    if(!data||!data.length) return [];
-    // 兼容旧数据：去掉 type 字段
-    for(var i=0;i<data.length;i++){delete data[i].type}
-    return data;
-  }catch(e){return[]}
-}
-function saveCategories(data){
-  // 写入前确保无 type 字段
-  var clean=data.map(function(c){var o={id:c.id,name:c.name,group:c.group||'',createdAt:c.createdAt||new Date().toISOString()};return o});
-  localStorage.setItem(STORAGE_KEY_CATEGORIES,JSON.stringify(clean));
-}
-
-// 获取分类（如果没有则初始化预设 - 但不覆盖已有数据）
-function getCategories(){
-  try{
-    var cats=loadCategories();
-    if(cats.length===0){
-      // 仅在 localStorage 完全没有数据时才写入默认值
-      cats=DEFAULT_CATEGORIES.map(function(c){return Object.assign({},c)});
-      saveCategories(cats);
-    }
-    cats.forEach(function(c){delete c.type});
-    return cats;
-  }catch(e){
-    console.error('getCategories error:',e);
-    return DEFAULT_CATEGORIES.map(function(c){return Object.assign({},c)});
-  }
-}
-
-// 兼容旧数据：ensure transactions have categoryId
-function getTransactions(){
-  var txns=loadTransactions();
-  var needsSave=false;
-  txns.forEach(function(t){
-    if(!t.categoryId){t.categoryId='';needsSave=true;}
-  });
-  if(needsSave) saveTransactions(txns);
-  return txns;
-}
+// ==================== 数据模型（已迁移到云数据库，见文件顶部） ====================
 
 function genId(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
 
@@ -315,7 +353,12 @@ var editingTransactionId=null;
 var editingCategoryId=null;
 
 // ==================== 页面切换 ====================
+
 function switchTab(tab){
+  switchTabAsync(tab).catch(function(e){console.error('switchTab error:',e)});
+}
+
+async function switchTabAsync(tab){
   currentTab=tab;
   currentDetailProjectId=null;
   document.querySelectorAll('.tab-bar button').forEach(function(b){b.classList.remove('active')});
@@ -324,12 +367,12 @@ function switchTab(tab){
   var tabIds=['records','projects','settings'];
   var idx=tabIds.indexOf(tab);
   if(idx>=0) document.querySelectorAll('.tab-bar button')[idx].classList.add('active');
-  if(tab==='projects') renderProjects();
-  if(tab==='records') renderTransactions();
-  if(tab==='settings') renderCategories();
+  if(tab==='projects') await renderProjects();
+  if(tab==='records') await renderTransactions();
+  if(tab==='settings') await renderCategories();
 }
 
-function showProjectDetail(projectId){
+async function showProjectDetail(projectId){
   currentDetailProjectId=projectId;
   currentTimeFilter='all';
   currentFilterYear=null;
@@ -338,16 +381,16 @@ function showProjectDetail(projectId){
   document.querySelectorAll('.tab-bar button').forEach(function(b){b.classList.remove('active')});
   document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active')});
   document.getElementById('project-detail').classList.add('active');
-  renderProjectDetail();
+  await renderProjectDetail();
 }
 
-function backToProjects(){
+async function backToProjects(){
   currentDetailProjectId=null;
   switchTab('projects');
 }
 
 // ==================== 时间筛选 ====================
-function setTimeFilter(filter,btn){
+async function setTimeFilter(filter,btn){
   currentTimeFilter=filter;
   currentFilterYear=null;
   currentFilterMonth=null;
@@ -358,7 +401,7 @@ function setTimeFilter(filter,btn){
     picker.style.display='none';
   }else if(filter==='year'){
     var years=[];
-    var txns=getTransactions().filter(function(t){return t.projectId===currentDetailProjectId});
+    var txns=(await getTransactions()).filter(function(t){return t.projectId===currentDetailProjectId});
     txns.forEach(function(t){if(t.date){var y=t.date.slice(0,4);if(years.indexOf(y)<0)years.push(y)}});
     years.sort().reverse();
     if(years.length===0) years.push(new Date().getFullYear().toString());
@@ -366,18 +409,18 @@ function setTimeFilter(filter,btn){
     picker.style.display='flex';
   }else if(filter==='month'){
     var months=[];
-    var txns2=getTransactions().filter(function(t){return t.projectId===currentDetailProjectId});
+    var txns2=(await getTransactions()).filter(function(t){return t.projectId===currentDetailProjectId});
     txns2.forEach(function(t){if(t.date){var m=t.date.slice(0,7);if(months.indexOf(m)<0)months.push(m)}});
     months.sort().reverse();
     if(months.length===0) months.push(new Date().toISOString().slice(0,7));
     picker.innerHTML='<select id="filter-yearmonth" onchange="onMonthChange()"><option value="">选择年月</option>'+months.map(function(m){return '<option value="'+m+'">'+m+'</option>'}).join('')+'</select>';
     picker.style.display='flex';
   }
-  renderProjectDetail();
+  await renderProjectDetail();
 }
 
 // 流水页全局时间筛选
-function setRecordsTimeFilter(filter,btn){
+async function setRecordsTimeFilter(filter,btn){
   recordsTimeFilter=filter;
   recordsFilterYear=null;
   recordsFilterMonth=null;
@@ -388,42 +431,42 @@ function setRecordsTimeFilter(filter,btn){
     picker.style.display='none';
   }else if(filter==='year'){
     var years=[];
-    getTransactions().forEach(function(t){if(t.date){var y=t.date.slice(0,4);if(years.indexOf(y)<0)years.push(y)}});
+    (await getTransactions()).forEach(function(t){if(t.date){var y=t.date.slice(0,4);if(years.indexOf(y)<0)years.push(y)}});
     years.sort().reverse();
     if(years.length===0) years.push(new Date().getFullYear().toString());
     picker.innerHTML='<select id="rec-year-select" onchange="onRecordsYearChange(this.value)"><option value="">选择年份</option>'+years.map(function(y){return '<option value="'+y+'">'+y+'年</option>'}).join('')+'</select>';
     picker.style.display='flex';
   }else if(filter==='month'){
     var months=[];
-    getTransactions().forEach(function(t){if(t.date){var m=t.date.slice(0,7);if(months.indexOf(m)<0)months.push(m)}});
+    (await getTransactions()).forEach(function(t){if(t.date){var m=t.date.slice(0,7);if(months.indexOf(m)<0)months.push(m)}});
     months.sort().reverse();
     if(months.length===0) months.push(new Date().toISOString().slice(0,7));
     picker.innerHTML='<select id="rec-month-select" onchange="onRecordsMonthChange(this.value)"><option value="">选择年月</option>'+months.map(function(m){return '<option value="'+m+'">'+m+'</option>'}).join('')+'</select>';
     picker.style.display='flex';
   }
-  renderTransactions();
+  await renderTransactions();
 }
-function onRecordsYearChange(val){
+async function onRecordsYearChange(val){
   recordsFilterYear=val||null;
-  renderTransactions();
+  await renderTransactions();
 }
-function onRecordsMonthChange(val){
+async function onRecordsMonthChange(val){
   if(val){recordsFilterYear=val.slice(0,4);recordsFilterMonth=val.slice(5,7)}else{recordsFilterYear=null;recordsFilterMonth=null}
-  renderTransactions();
+  await renderTransactions();
 }
 
-function onYearChange(){
+async function onYearChange(){
   currentFilterYear=document.getElementById('filter-year').value;
-  renderProjectDetail();
+  await renderProjectDetail();
 }
 
-function onMonthChange(){
+async function onMonthChange(){
   currentFilterMonth=document.getElementById('filter-yearmonth').value;
-  renderProjectDetail();
+  await renderProjectDetail();
 }
 
-function getFilteredTransactions(){
-  var txns=getTransactions().filter(function(t){return t.projectId===currentDetailProjectId});
+async function getFilteredTransactions(){
+  var txns=(await getTransactions()).filter(function(t){return t.projectId===currentDetailProjectId});
   if(currentTimeFilter==='year' && currentFilterYear){
     txns=txns.filter(function(t){return t.date&&t.date.startsWith(currentFilterYear)});
   }else if(currentTimeFilter==='month' && currentFilterMonth){
@@ -433,8 +476,8 @@ function getFilteredTransactions(){
 }
 
 // ==================== 分类管理 ====================
-function renderCategories(){
-  var cats=getCategories();
+async function renderCategories(){
+  var cats=await getCategories();
   var container=document.getElementById('all-categories');
   if(cats.length===0){
     container.innerHTML='<div class="empty-state" style="padding:20px"><p>暂无分类</p></div>';
@@ -450,11 +493,12 @@ function renderCategories(){
   }
 }
 
-function openCategoryModal(id){
+async function openCategoryModal(id){
   editingCategoryId=id||null;
-  var cat=id?getCategories().find(function(c){return c.id===id}):null;
+  var cats=await getCategories();
+  var cat=id?cats.find(function(c){return c.id===id}):null;
 
-  var allGroups=getCategories().map(function(c){return c.group}).filter(function(v,i,a){return a.indexOf(v)===i});
+  var allGroups=cats.map(function(c){return c.group}).filter(function(v,i,a){return a.indexOf(v)===i});
 
   var modal=document.createElement('div');
   modal.className='modal-overlay';
@@ -466,17 +510,17 @@ function openCategoryModal(id){
     '<label>所属大类</label>'+
     '<input id="cat-group" value="'+(cat?escapeHtml(cat.group):'')+'" placeholder="例如：项目收入、硬装改造" list="group-list">'+
     '<datalist id="group-list">'+allGroups.map(function(g){return '<option value="'+escapeHtml(g)+'">'}).join('')+'</datalist>'+
-    '<button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="saveCategory()">保存</button>'+
+    '<button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="(async function(){await saveCategory()})()">保存</button>'+
   '</div>';
   document.body.appendChild(modal);
   modal.addEventListener('click',function(e){if(e.target===modal)modal.remove()});
 }
 
-function saveCategory(){
+async function saveCategory(){
   var name=document.getElementById('cat-name').value.trim();
   if(!name){alert('请输入分类名称');return}
   var group=document.getElementById('cat-group').value.trim();
-  var cats=getCategories();
+  var cats=await getCategories();
 
   if(editingCategoryId){
     var idx=cats.findIndex(function(c){return c.id===editingCategoryId});
@@ -492,19 +536,21 @@ function saveCategory(){
       createdAt:new Date().toISOString()
     });
   }
-  saveCategories(cats);
-  renderCategories();
+  await saveCategories(cats);
+  await renderCategories();
   document.querySelector('.modal-overlay')?.remove();
+  syncFromCloud();
+  syncFromCloud();
 }
 
-function deleteCategory(id){
-  var cat=getCategories().find(function(c){return c.id===id});
+async function deleteCategory(id){
+  var cats=await getCategories(); var cat=cats.find(function(c){return c.id===id});
   if(!cat)return;
-  var transactions=getTransactions();
+  var transactions=await getTransactions();
   var usedCount=transactions.filter(function(t){return t.categoryId===id}).length;
 
   if(usedCount>0){
-    var mergeCats=getCategories().filter(function(c){return c.id!==id});
+    var mergeCats=cats.filter(function(c){return c.id!==id});
     if(mergeCats.length===0){
       alert('该分类下有'+usedCount+'条账目在使用，且没有其他分类可合并。请先新增分类后再删除。');
       return;
@@ -514,40 +560,40 @@ function deleteCategory(id){
     transactions.forEach(function(t){
       if(t.categoryId===id) t.categoryId=mergeCats[0].id;
     });
-    saveTransactions(transactions);
+    await saveTransactions(transactions);
   }else{
     if(!confirm('确定删除分类「'+cat.name+'」吗？'))return;
   }
 
-  var cats=getCategories().filter(function(c){return c.id!==id});
-  saveCategories(cats);
-  renderCategories();
+  var cats=(await getCategories()).filter(function(c){return c.id!==id});
+  await saveCategories(cats);
+  await renderCategories();
 }
 
-function resetCategories(){
+async function resetCategories(){
   if(!confirm('恢复预设分类将删除所有自定义分类（已有账目使用的分类不会受影响）。确定恢复吗？'))return;
-  var transactions=getTransactions();
+  var transactions=await getTransactions();
   var usedIds={};
   transactions.forEach(function(t){
     if(t.categoryId) usedIds[t.categoryId]=true;
   });
 
   var merged=DEFAULT_CATEGORIES.map(function(c){return Object.assign({},c)});
-  var currentCats=loadCategories();
+  var currentCats=await loadCategories();
   currentCats.forEach(function(c){
     if(usedIds[c.id] && !merged.find(function(m){return m.id===c.id})){
       merged.push({id:c.id,name:c.name,group:c.group||'',createdAt:c.createdAt||new Date().toISOString()});
     }
   });
 
-  saveCategories(merged);
-  renderCategories();
+  await saveCategories(merged);
+  await renderCategories();
 }
 
 // ==================== 项目管理 ====================
-function renderProjects(){
-  var projects=loadProjects();
-  var transactions=getTransactions();
+async function renderProjects(){
+  var projects=await loadProjectsLocal();
+  var transactions=await getTransactions();
   var container=document.getElementById('project-list');
   if(projects.length===0){
     container.innerHTML='<div class="empty-state"><div class="icon">📋</div><p>还没有项目，点击上方按钮创建</p></div>';
@@ -567,9 +613,9 @@ function renderProjects(){
   }).join('');
 }
 
-function openProjectModal(id){
+async function openProjectModal(id){
   editingProjectId=id||null;
-  var project=id?loadProjects().find(function(p){return p.id===id}):null;
+  var project=id?(await loadProjectsLocal()).find(function(p){return p.id===id}):null;
   var modal=document.createElement('div');
   modal.className='modal-overlay';
   modal.innerHTML='<div class="modal">'+
@@ -591,16 +637,16 @@ function openProjectModal(id){
     '</div>'+
     '<label>备注</label>'+
     '<textarea id="proj-note" placeholder="项目备注...">'+(project?escapeHtml(project.note||''):'')+'</textarea>'+
-    '<button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="saveProject()">保存</button>'+
+    '<button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="(async function(){await saveProject()})()">保存</button>'+
   '</div>';
   document.body.appendChild(modal);
   modal.addEventListener('click',function(e){if(e.target===modal)modal.remove()});
 }
 
-function saveProject(){
+async function saveProject(){
   var name=document.getElementById('proj-name').value.trim();
   if(!name){alert('请输入项目名称');return}
-  var projects=loadProjects();
+  var projects=await loadProjectsLocal();
   if(editingProjectId){
     var idx=projects.findIndex(function(p){return p.id===editingProjectId});
     if(idx>=0){
@@ -627,31 +673,33 @@ function saveProject(){
       createdAt:new Date().toISOString()
     });
   }
-  saveProjects(projects);
-  renderProjects();
+  await saveProjects(projects);
+  await renderProjects();
   // 如果是从详情页编辑，刷新详情页
-  if(currentDetailProjectId) renderProjectDetail();
+  if(currentDetailProjectId) await renderProjectDetail();
   document.querySelector('.modal-overlay')?.remove();
+  syncFromCloud();
+  syncFromCloud();
 }
 
-function deleteProject(id){
+async function deleteProject(id){
   if(!confirm('删除项目会同时删除该项目下的所有账目，确定吗？'))return;
-  var projects=loadProjects().filter(function(p){return p.id!==id});
-  var transactions=getTransactions().filter(function(t){return t.projectId!==id});
-  saveProjects(projects);
-  saveTransactions(transactions);
+  var projects=(await loadProjectsLocal()).filter(function(p){return p.id!==id});
+  var transactions=(await getTransactions()).filter(function(t){return t.projectId!==id});
+  await saveProjects(projects);
+  await saveTransactions(transactions);
   // 如果当前正在查看该项目详情，返回列表
   if(currentDetailProjectId===id) backToProjects();
-  renderProjects();
+  await renderProjects();
 }
 
 // ==================== 项目详情页 ====================
-function renderProjectDetail(){
-  var project=loadProjects().find(function(p){return p.id===currentDetailProjectId});
+async function renderProjectDetail(){
+  var projects=await loadProjectsLocal(); var project=projects.find(function(p){return p.id===currentDetailProjectId});
   if(!project){backToProjects();return;}
 
-  var txns=getFilteredTransactions();
-  var cats=getCategories();
+  var txns=await getFilteredTransactions();
+  var cats=await getCategories();
 
   var totalIncome=txns.filter(function(t){return t.type==='income'}).reduce(function(s,t){return s+t.amount},0);
   var totalExpense=txns.filter(function(t){return t.type==='expense'}).reduce(function(s,t){return s+t.amount},0);
@@ -818,10 +866,10 @@ function renderPieChart(elemId,catData,total,cats){
 }
 
 // ==================== 流水 ====================
-function renderTransactions(){
-  var projects=loadProjects();
-  var transactions=getTransactions();
-  var cats=getCategories();
+async function renderTransactions(){
+  var projects=await loadProjectsLocal();
+  var transactions=await getTransactions();
+  var cats=await getCategories();
   var filterProject=document.getElementById('filter-project')?.value||'';
 
   // 更新筛选下拉
@@ -892,15 +940,15 @@ function renderTransactions(){
   }
 }
 
-function openTransactionModal(editId){
+async function openTransactionModal(editId){
   editingTransactionId=editId||null;
-  var projects=loadProjects();
-  var cats=getCategories();
+  var projects=await loadProjectsLocal();
+  var cats=await getCategories();
   if(projects.length===0){alert('请先创建项目');return}
   // 查找待编辑的交易
   var editTxn=null;
   if(editingTransactionId){
-    editTxn=getTransactions().find(function(t){return t.id===editingTransactionId});
+    editTxn=(await getTransactions()).find(function(t){return t.id===editingTransactionId});
   }
   var modal=document.createElement('div');
   modal.className='modal-overlay';
@@ -922,7 +970,7 @@ function openTransactionModal(editId){
     '<input id="txn-date" type="date" value="'+(editTxn?editTxn.date:new Date().toISOString().slice(0,10))+'">'+
     '<label>备注</label>'+
     '<input id="txn-note" placeholder="设计费、材料费..." value="'+(editTxn?escapeHtml(editTxn.note||''):'')+'">'+
-    '<button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="saveTransaction()">'+(editTxn?'更新':'保存')+'</button>'+
+    '<button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="(async function(){await saveTransaction()})()">'+(editTxn?'更新':'保存')+'</button>'+
   '</div>';
   document.body.appendChild(modal);
   modal.addEventListener('click',function(e){if(e.target===modal)modal.remove()});
@@ -954,12 +1002,12 @@ function setType(type,btn){
   // 不再切换分类下拉，始终显示全部
 }
 
-function saveTransaction(){
+async function saveTransaction(){
   var amount=parseFloat(document.getElementById('txn-amount').value);
   if(!amount||amount<=0){alert('请输入有效金额');return}
   var categoryId=document.getElementById('txn-category').value;
   if(!categoryId){alert('请选择分类');return}
-  var transactions=getTransactions();
+  var transactions=await getTransactions();
   var txnData={
     projectId:document.getElementById('txn-project').value,
     type:document.getElementById('txn-type').value,
@@ -983,24 +1031,26 @@ function saveTransaction(){
     txnData.createdAt=new Date().toISOString();
     transactions.push(txnData);
   }
-  saveTransactions(transactions);
+  await saveTransactions(transactions);
   editingTransactionId=null;
-  renderTransactions();
+  await renderTransactions();
   document.querySelector('.modal-overlay')?.remove();
+  syncFromCloud();
+  syncFromCloud();
 }
 
-function deleteTransaction(id){
+async function deleteTransaction(id){
   if(!confirm('确定删除这条记录？'))return;
-  saveTransactions(getTransactions().filter(function(t){return t.id!==id}));
-  renderTransactions();
+  var all=await getTransactions(); await saveTransactions(all.filter(function(t){return t.id!==id}));
+  await renderTransactions();
 }
 
 // ==================== 数据管理 ====================
-function exportData(){
+async function exportData(){
   var data={
-    projects:loadProjects(),
-    transactions:getTransactions(),
-    categories:getCategories(),
+    projects:await loadProjectsLocal(),
+    transactions:await getTransactions(),
+    categories:await getCategories(),
     exportedAt:new Date().toISOString()
   };
   var blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
@@ -1013,7 +1063,7 @@ function exportData(){
   alert('导出成功！');
 }
 
-function importData(){
+async function importData(){
   var input=document.createElement('input');
   input.type='file';
   input.accept='.json';
@@ -1021,17 +1071,17 @@ function importData(){
     var file=this.files[0];
     if(!file)return;
     var reader=new FileReader();
-    reader.onload=function(e){
+    reader.onload=async function(e){
       try{
         var data=JSON.parse(e.target.result);
         if(!data.projects||!data.transactions){throw new Error('格式错误')}
         if(!confirm('即将导入 '+data.projects.length+' 个项目、'+data.transactions.length+' 条账目'+(data.categories?', '+data.categories.length+' 个分类':'')+'，会覆盖当前数据。确定吗？'))return;
-        saveProjects(data.projects);
-        saveTransactions(data.transactions);
+        await saveProjects(data.projects);
+        await saveTransactions(data.transactions);
         if(data.categories){
           // 导入时自动清理 type 字段
           var clean=data.categories.map(function(c){return {id:c.id,name:c.name,group:c.group||'',createdAt:c.createdAt||new Date().toISOString()}});
-          saveCategories(clean);
+          await saveCategories(clean);
         }
         alert('导入成功！');
         switchTab(currentTab);
@@ -1042,14 +1092,22 @@ function importData(){
   input.click();
 }
 
-function clearAll(){
+async function clearAll(){
   if(!confirm('⚠️ 确定要清空所有项目和账目数据吗？此操作不可恢复！'))return;
   if(!confirm('再次确认：真的要删除全部数据吗？'))return;
+  if(db){
+    await ensureCloudReady();
+    if(cloudReady){
+      try{ await db.collection('projects').where({_id: db.RegExp({regex: '.*', options: 's'})}).remove(); }catch(e){}
+      try{ await db.collection('transactions').where({_id: db.RegExp({regex: '.*', options: 's'})}).remove(); }catch(e){}
+      try{ await db.collection('categories').where({_id: db.RegExp({regex: '.*', options: 's'})}).remove(); }catch(e){}
+    }
+  }
   localStorage.removeItem(STORAGE_KEY_PROJECTS);
   localStorage.removeItem(STORAGE_KEY_TRANSACTIONS);
   localStorage.removeItem(STORAGE_KEY_CATEGORIES);
   alert('数据已清空');
-  switchTab(currentTab);
+  await switchTabAsync(currentTab);
 }
 
 function escapeHtml(str){
@@ -1063,13 +1121,15 @@ function formatMoney(n){
 }
 
 // ==================== 初始化数据 ====================
-function initData(){
+async function initData(){
   try{
     var needSave=false;
     
-    if(!localStorage.getItem(STORAGE_KEY_CATEGORIES)){
+    var cats=localLoad(STORAGE_KEY_CATEGORIES);
+  if(cats.length===0){ await syncFromCloud(); cats=localLoad(STORAGE_KEY_CATEGORIES); }
+  if(cats.length===0){
       var cats=DEFAULT_CATEGORIES.map(function(c){return Object.assign({},c)});
-      saveCategories(cats);
+      await saveCategories(cats);
       needSave=true;
     }
 
@@ -1081,10 +1141,10 @@ function initData(){
 }
 
 // ==================== 启动 ====================
-document.addEventListener('DOMContentLoaded',function(){
+document.addEventListener('DOMContentLoaded',async function(){
   try{
-    initData();
-    renderTransactions();
+    await initData();
+    await renderTransactions();
   }catch(e){
     console.error('Startup error:',e);
     document.getElementById('transaction-list').innerHTML='<div class="empty-state"><div class="icon">⚠️</div><p>加载出错，请刷新页面重试</p></div>';
