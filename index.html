@@ -269,16 +269,21 @@ function saveCategories(data){
   localStorage.setItem(STORAGE_KEY_CATEGORIES,JSON.stringify(clean));
 }
 
-// 获取分类（如果没有则初始化预设）
+// 获取分类（如果没有则初始化预设 - 但不覆盖已有数据）
 function getCategories(){
-  var cats=loadCategories();
-  if(cats.length===0){
-    cats=DEFAULT_CATEGORIES.map(function(c){return Object.assign({},c)});
-    saveCategories(cats);
+  try{
+    var cats=loadCategories();
+    if(cats.length===0){
+      // 仅在 localStorage 完全没有数据时才写入默认值
+      cats=DEFAULT_CATEGORIES.map(function(c){return Object.assign({},c)});
+      saveCategories(cats);
+    }
+    cats.forEach(function(c){delete c.type});
+    return cats;
+  }catch(e){
+    console.error('getCategories error:',e);
+    return DEFAULT_CATEGORIES.map(function(c){return Object.assign({},c)});
   }
-  // 确保运行时无 type 字段
-  cats.forEach(function(c){delete c.type});
-  return cats;
 }
 
 // 兼容旧数据：ensure transactions have categoryId
@@ -1059,23 +1064,32 @@ function formatMoney(n){
 
 // ==================== 初始化数据 ====================
 function initData(){
-  // 只初始化分类，不导入 Excel 数据
-  var needSave=false;
-  
-  // Init categories
-  if(!localStorage.getItem(STORAGE_KEY_CATEGORIES)){
-    var cats=DEFAULT_CATEGORIES.map(function(c){return Object.assign({},c)});
-    saveCategories(cats);
-    needSave=true;
-  }
+  try{
+    var needSave=false;
+    
+    if(!localStorage.getItem(STORAGE_KEY_CATEGORIES)){
+      var cats=DEFAULT_CATEGORIES.map(function(c){return Object.assign({},c)});
+      saveCategories(cats);
+      needSave=true;
+    }
 
-  
-  return needSave;
+    return needSave;
+  }catch(e){
+    console.error('initData error:',e);
+    return false;
+  }
 }
 
 // ==================== 启动 ====================
-initData();
-renderTransactions();
+document.addEventListener('DOMContentLoaded',function(){
+  try{
+    initData();
+    renderTransactions();
+  }catch(e){
+    console.error('Startup error:',e);
+    document.getElementById('transaction-list').innerHTML='<div class="empty-state"><div class="icon">⚠️</div><p>加载出错，请刷新页面重试</p></div>';
+  }
+});
 </script>
 </body>
 </html>
