@@ -212,7 +212,7 @@ label{font-size:13px;color:#666;display:block;margin-bottom:4px}
   </div>
   <div class="card">
     <h3 style="margin-bottom:8px">关于</h3>
-    <p style="font-size:13px;color:#666">项目记账本 v3.1<br>统一收支分类 · 项目详情统计 · 支持云端同步</p>
+    <p style="font-size:13px;color:#666">项目记账本 v3.2<br>统一收支分类 · 项目详情统计 · 支持云端同步</p>
   </div>
 </div>
 
@@ -242,13 +242,14 @@ try {
   console.error('云数据库初始化失败:', e);
 }
 
-function ensureCloudReady(){
+function ensureCloudReady(maxWait){
   return new Promise(function(resolve){
     if(cloudReady || !db){ resolve(); return; }
-    var count=0;
+    var max=maxWait||15;
+    var count=0, limit=max*5; // 每200ms检查一次
     var timer=setInterval(function(){
       if(cloudReady){ clearInterval(timer); resolve(); }
-      else if(++count>25){ clearInterval(timer); resolve(); } // 最多等5秒
+      else if(++count>limit){ clearInterval(timer); resolve(); }
     }, 200);
   });
 }
@@ -270,37 +271,52 @@ async function saveTransactions(data){ localSave(STORAGE_KEY_TRANSACTIONS, data)
 async function loadCategories(){ return localLoad(STORAGE_KEY_CATEGORIES); }
 async function saveCategories(data){ localSave(STORAGE_KEY_CATEGORIES, data); if(db){ await ensureCloudReady(); if(cloudReady){ for(var i=0;i<data.length;i++){ var d=data[i]; d._id=d.id; await db.collection('categories').doc(d.id).set(d).catch(function(){})} } } }
 
-// 从云端全量同步到本地
-async function syncFromCloud(){
-  if(!db) return;
-  try{
-    await ensureCloudReady();
-    if(!cloudReady) return;
-    var r1=await db.collection('projects').get(); localSave(STORAGE_KEY_PROJECTS, r1.data||[]);
-    var r2=await db.collection('transactions').get(); localSave(STORAGE_KEY_TRANSACTIONS, r2.data||[]);
-    var r3=await db.collection('categories').get(); localSave(STORAGE_KEY_CATEGORIES, r3.data||[]);
-  }catch(e){ console.error('sync error:',e) }
+// 从云端全量同步到本地（带重试）
+async function syncFromCloud(retries){
+  if(!db) return false;
+  var maxRetries=retries||3;
+  for(var attempt=1; attempt<=maxRetries; attempt++){
+    try{
+      if(attempt===1) await ensureCloudReady(15);
+      else await ensureCloudReady(5);
+      if(!cloudReady){ console.warn('syncFromCloud attempt '+attempt+': cloud not ready'); continue; }
+      var r1=await db.collection('projects').get(); localSave(STORAGE_KEY_PROJECTS, r1.data||[]);
+      var r2=await db.collection('transactions').get(); localSave(STORAGE_KEY_TRANSACTIONS, r2.data||[]);
+      var r3=await db.collection('categories').get(); localSave(STORAGE_KEY_CATEGORIES, r3.data||[]);
+      localSave('lastSyncTime', Date.now());
+      console.log('syncFromCloud success at attempt '+attempt);
+      return true;
+    }catch(e){ console.error('syncFromCloud attempt '+attempt+' error:',e) }
+    if(attempt<maxRetries) await new Promise(function(r){setTimeout(r, 2000)});
+  }
+  return false;
 }
 
 // 手动同步：先推本地到云端，再从云端拉回覆盖本地
 async function syncData(){
-  if(!db){ alert('云端SDK未加载，请检查网络后刷新页面。'); return; }
-  await ensureCloudReady();
-  if(!cloudReady){ alert('云端未连接，请检查网络后重试。'); return; }
+  var btn=document.getElementById('syncBtn');
+  if(btn){ btn.disabled=true; btn.textContent='同步中...'; }
   try{
+    if(!db){ alert('云端SDK未加载，请检查网络后刷新页面。'); return; }
+    await ensureCloudReady(10);
+    if(!cloudReady){ alert('云端未连接，请检查网络后重试。'); return; }
     // 推本地数据到云端
     await saveProjects(localLoad(STORAGE_KEY_PROJECTS));
     await saveTransactions(localLoad(STORAGE_KEY_TRANSACTIONS));
     await saveCategories(localLoad(STORAGE_KEY_CATEGORIES));
     // 从云端拉取最新数据覆盖本地
-    await syncFromCloud();
+    var ok=await syncFromCloud(3);
+    if(!ok){ alert('同步未完成，请稍后重试。'); return; }
     // 刷新当前页面
     if(currentTab==='records') await renderTransactions();
     if(currentTab==='projects') await renderProjects();
     if(currentTab==='settings') await renderCategories();
+    alert('同步完成！');
   }catch(e){
     console.error('syncData error:',e);
     alert('同步失败：'+e.message);
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='同步数据'; }
   }
 }
 
@@ -1166,9 +1182,16 @@ async function initData(){
 // ==================== 启动 ====================
 document.addEventListener('DOMContentLoaded',async function(){
   try{
-    await syncFromCloud();
+    var synced=await syncFromCloud(5);
+    if(!synced && (typeof cloudbase==='undefined')){
+      // SDK 完全没加载，静默使用本地数据
+    }
     await initData();
     await renderTransactions();
+    // 如果首次同步失败且无本地数据，启动后再次重试
+    if(!synced && localLoad(STORAGE_KEY_TRANSACTIONS).length===0){
+      setTimeout(async function(){ await syncFromCloud(3); await renderTransactions(); }, 5000);
+    }
   }catch(e){
     console.error('Startup error:',e);
     document.getElementById('transaction-list').innerHTML='<div class="empty-state"><div class="icon">⚠️</div><p>加载出错，请刷新页面重试</p></div>';
