@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>项目记账本</title>
-<script src="https://imgcache.qq.com/qcloud/tcbjs/2.1.0/tcb.js"></script>
+<script src="https://static.cloudbase.net/cloudbase-js-sdk/latest/cloudbase.full.js"></script>
 
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -59,7 +59,7 @@ label{font-size:13px;color:#666;display:block;margin-bottom:4px}
 .chart-container{background:#fff;border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
 .toolbar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
 .modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:100;display:flex;align-items:flex-end;justify-content:center}
-.modal{background:#fff;border-radius:16px 16px 0 0;width:100%;max-width:480px;max-height:85vh;overflow-y:auto;padding:20px;animation:slideUp .3s}
+.modal{background:#fff;border-radius:16px 16px 0 0;width:100%;max-width:480px;max-height:85vh;overflow:visible;padding:20px;animation:slideUp .3s}
 @keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
 .modal h3{font-size:17px;margin-bottom:16px}
 .modal .close{float:right;background:none;border:none;font-size:22px;cursor:pointer;color:#999}
@@ -212,7 +212,7 @@ label{font-size:13px;color:#666;display:block;margin-bottom:4px}
   </div>
   <div class="card">
     <h3 style="margin-bottom:8px">关于</h3>
-    <p style="font-size:13px;color:#666">项目记账本 v3.0<br>统一收支分类 · 项目详情统计。数据全部保存在手机本地，不联网不上传。</p>
+    <p style="font-size:13px;color:#666">项目记账本 v3.1<br>统一收支分类 · 项目详情统计 · 支持云端同步</p>
   </div>
 </div>
 
@@ -224,8 +224,8 @@ let tcbApp = null, db = null, auth = null;
 let cloudReady = false;
 
 try {
-  if (typeof tcb !== 'undefined') {
-    tcbApp = tcb.init({env: TCB_ENV});
+  if (typeof cloudbase !== 'undefined') {
+    tcbApp = cloudbase.init({env: TCB_ENV, region: 'ap-shanghai'});
     db = tcbApp.database();
     auth = tcbApp.auth();
     // 匿名登录
@@ -236,7 +236,7 @@ try {
       console.error('云数据库连接失败:', e);
     });
   } else {
-    console.warn('tcb SDK 未加载，仅使用本地存储');
+    console.warn('cloudbase SDK 未加载，仅使用本地存储');
   }
 } catch(e){
   console.error('云数据库初始化失败:', e);
